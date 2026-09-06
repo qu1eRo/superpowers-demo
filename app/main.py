@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.core.errors import AppError
+from app.routers.auth import router as auth_router
 
 
 def create_app() -> FastAPI:
@@ -14,6 +15,8 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=500, content={"code": "INTERNAL_ERROR", "message": "内部错误"})
+
+    app.include_router(auth_router)
 
     @app.get("/health")
     async def health() -> dict:
