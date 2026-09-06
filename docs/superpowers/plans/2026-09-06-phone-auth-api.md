@@ -951,16 +951,13 @@ async def test_verify_success_clears_code_and_fails(session, provider, redis, se
     await store_code(redis, "13800000005", "123456")
     with pytest.raises(InvalidCodeError):
         await svc.verify("13800000005", "000000")
-    await svc.verify("13800000005", "123456")
+    result = await svc.verify("13800000005", "123456")
+    assert result.is_new is True
+    # 验证码一次性：成功后即删除，同一验证码不能二次使用
     assert await redis.get("sms:code:13800000005") is None
     assert await redis.get("sms:fail:13800000005") is None
-    # 验证码一次性：再次使用同一验证码应失败
-    await redis.setex("sms:code:13800000005", 300, "123456")  # 重新存码但不清失败计数
-    svc2 = make_service(session, provider, redis, settings)
-    await redis.delete("sms:fail:13800000005")
     with pytest.raises(InvalidCodeError):
-        # 码已被删除，模拟用过期码
-        await svc2.verify("13800000005", "123456")
+        await svc.verify("13800000005", "123456")
 
 
 async def test_verify_missing_code_raises(session, provider, redis, settings):
