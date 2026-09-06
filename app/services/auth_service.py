@@ -3,11 +3,11 @@ import secrets
 import redis.asyncio
 
 from app.core.config import Settings
-from app.core.errors import InvalidCodeError, RateLimitedError, TooManyAttemptsError
+from app.core.errors import InvalidCodeError, InvalidTokenError, RateLimitedError, TooManyAttemptsError
 from app.core.security import create_access_token, generate_refresh_token
 from app.providers.base import SmsProvider
 from app.repositories.user_repo import UserRepo
-from app.schemas.auth import VerifyResponse
+from app.schemas.auth import TokenPair, VerifyResponse
 
 
 def _get_str(value) -> str | None:
@@ -59,6 +59,18 @@ class AuthService:
         access, refresh = await self._issue_tokens(user.id)
         return VerifyResponse(access_token=access, refresh_token=refresh,
                               user_id=user.id, is_new=is_new)
+
+    async def refresh(self, refresh_token: str) -> TokenPair:
+        key = f"refresh:{refresh_token}"
+        user_id = _get_str(await self.redis.get(key))
+        if user_id is None:
+            raise InvalidTokenError()
+        await self.redis.delete(key)
+        access, new_refresh = await self._issue_tokens(int(user_id))
+        return TokenPair(access_token=access, refresh_token=new_refresh)
+
+    async def logout(self, refresh_token: str) -> None:
+        await self.redis.delete(f"refresh:{refresh_token}")
 
     async def _issue_tokens(self, user_id: int) -> tuple[str, str]:
         access = create_access_token(user_id, self.settings.jwt_secret,
