@@ -26,6 +26,7 @@
 ### Task 1: 项目脚手架 + 配置 + 健康检查
 
 **Files:**
+
 - Create: `pyproject.toml`
 - Create: `app/__init__.py`（空）
 - Create: `app/core/__init__.py`（空）
@@ -34,6 +35,7 @@
 - Test: `tests/__init__.py`（空）、`tests/conftest.py`、`tests/test_main.py`
 
 **Interfaces:**
+
 - Consumes: 无（首个任务）
 - Produces: `Settings` 类（`app/core/config.py`），字段：`sms_provider: str = "mock"`、`database_url: str`、`redis_url: str = "redis://localhost:6379/0"`、`jwt_secret: str`（必填无默认）、`access_token_ttl_minutes: int = 30`、`refresh_token_ttl_days: int = 30`、`sms_code_ttl_seconds: int = 300`、`sms_send_limit_seconds: int = 60`、`sms_max_fail_count: int = 5`；构造方式 `Settings(jwt_secret="test-secret")`（pydantic-settings，读环境变量/`.env`）。FastAPI 应用工厂 `create_app() -> FastAPI`（`app/main.py`）。
 
@@ -178,13 +180,16 @@ git commit -m "feat: 项目脚手架、配置与健康检查"
 ### Task 2: 错误模型 + 全局异常处理
 
 **Files:**
+
 - Create: `app/core/errors.py`
 - Modify: `app/main.py`（注册 handler）
 - Test: `tests/test_errors.py`
 
 **Interfaces:**
+
 - Consumes: `create_app()`（Task 1）
 - Produces: `app/core/errors.py` 中的异常类，后续所有 service/router 抛出：
+
   - `AppError(Exception)`：属性 `status: int`、`code: str`、`message: str`
   - `RateLimitedError` → `429, "RATE_LIMITED", "发送过于频繁，请稍后再试"`
   - `TooManyAttemptsError` → `429, "TOO_MANY_ATTEMPTS", "尝试次数过多，请稍后再试"`
@@ -320,6 +325,7 @@ git commit -m "feat: 统一错误模型与全局异常处理"
 ### Task 3: User 模型 + UserRepo + 异步会话工厂
 
 **Files:**
+
 - Create: `app/db/__init__.py`（空）
 - Create: `app/db/models.py`
 - Create: `app/db/session.py`
@@ -328,8 +334,10 @@ git commit -m "feat: 统一错误模型与全局异常处理"
 - Test: `tests/test_user_repo.py`
 
 **Interfaces:**
+
 - Consumes: `Settings.database_url`（Task 1）
 - Produces:
+
   - `app/db/models.py`：`Base`（`DeclarativeBase`）与 `User` ORM 模型（表 `users`，列 `id`/`phone`/`created_at`/`updated_at`，`phone` 唯一索引）
   - `app/db/session.py`：`get_engine(database_url: str) -> AsyncEngine`、`get_session_factory(engine: AsyncSession) -> async_sessionmaker[AsyncSession]`（`expire_on_commit=False`）
   - `app/repositories/user_repo.py`：`UserRepo(session: AsyncSession)`，方法 `async def get_by_phone(phone: str) -> User | None`、`async def get_by_id(user_id: int) -> User | None`、`async def create(phone: str) -> User`
@@ -479,6 +487,7 @@ git commit -m "feat: User 模型、异步会话工厂与 UserRepo"
 ### Task 4: SmsProvider 接口 + mock + aliyun stub + 工厂
 
 **Files:**
+
 - Create: `app/providers/__init__.py`（内容见下）
 - Create: `app/providers/base.py`
 - Create: `app/providers/mock.py`
@@ -486,8 +495,10 @@ git commit -m "feat: User 模型、异步会话工厂与 UserRepo"
 - Test: `tests/test_providers.py`
 
 **Interfaces:**
+
 - Consumes: 无
 - Produces:
+
   - `SmsProvider`（ABC，`app/providers/base.py`）：`async def send_code(self, phone: str, code: str) -> None`
   - `MockSmsProvider`：发送记录存 `self.sent: list[tuple[str, str]]`，同时 `print` 到控制台（格式 `[MOCK SMS] {phone} -> {code}`）
   - `AliyunSmsProvider`：`send_code` 抛 `NotImplementedError("阿里云短信尚未接入")`
@@ -607,12 +618,15 @@ git commit -m "feat: 可插拔短信 Provider 接口与 mock 实现"
 ### Task 5: JWT 安全模块
 
 **Files:**
+
 - Create: `app/core/security.py`
 - Test: `tests/test_security.py`
 
 **Interfaces:**
+
 - Consumes: 无
 - Produces（`app/core/security.py`）：
+
   - `create_access_token(user_id: int, secret: str, ttl_minutes: int) -> str`（HS256，payload 含 `sub=str(user_id)`、`exp`）
   - `decode_access_token(token: str, secret: str) -> int`（无效/过期抛 `jwt.InvalidTokenError`，即 `PyJWTError` 子类）
   - `generate_refresh_token() -> str`（`secrets.token_urlsafe(48)`，每次不同）
@@ -697,13 +711,16 @@ git commit -m "feat: JWT 签发/校验与 refresh token 生成"
 ### Task 6: AuthService.send_code（发送 + 频率限制）
 
 **Files:**
+
 - Create: `app/services/__init__.py`（空）
 - Create: `app/services/auth_service.py`
 - Test: `tests/test_send_code.py`
 
 **Interfaces:**
+
 - Consumes: `UserRepo`（Task 3）、`SmsProvider`（Task 4）、`Settings`（Task 1）、`RateLimitedError`（Task 2）
 - Produces: `AuthService(user_repo: UserRepo, sms_provider: SmsProvider, redis: redis.asyncio.Redis, settings: Settings)`，方法：
+
   - `async def send_code(self, phone: str) -> int`：返回 `settings.sms_code_ttl_seconds`；频率受限时抛 `RateLimitedError`
   - Redis 值统一以 `str` 读写（fake/real redis 混用时的 bytes 由 `_get_str` 帮助函数处理）
 
@@ -838,13 +855,16 @@ git commit -m "feat: 发送验证码与频率限制"
 ### Task 7: AuthService.verify（验证 + 自动注册 + 签发 token）
 
 **Files:**
+
 - Modify: `app/services/auth_service.py`（新增 `verify` 方法与 `VerifyResult`）
 - Create: `app/schemas/__init__.py`（空）、`app/schemas/auth.py`
 - Test: `tests/test_verify.py`
 
 **Interfaces:**
+
 - Consumes: Task 3/4/5/6 的全部接口
 - Produces:
+
   - `app/schemas/auth.py`：`TokenPair`（`access_token: str`、`refresh_token: str`、`token_type: str = "bearer"`）、`VerifyResponse(TokenPair)`（`user_id: int`、`is_new: bool`）
   - `AuthService.verify(phone: str, code: str) -> VerifyResponse`
   - 行为：达到 `sms_max_fail_count` 抛 `TooManyAttemptsError`；验证码不匹配/不存在抛 `InvalidCodeError` 并递增 `sms:fail:{phone}`（TTL = `sms_code_ttl_seconds`）；成功后删除 `sms:code:` 与 `sms:fail:` 键，查/建用户，写 `refresh:{token}`（TTL = `refresh_token_ttl_days * 86400` 秒）
@@ -1044,12 +1064,15 @@ git commit -m "feat: 验证码校验、自动注册与 token 签发"
 ### Task 8: AuthService.refresh + logout
 
 **Files:**
+
 - Modify: `app/services/auth_service.py`（新增两个方法）
 - Test: `tests/test_refresh_logout.py`
 
 **Interfaces:**
+
 - Consumes: Task 7 的 `_issue_tokens`
 - Produces:
+
   - `async def refresh(self, refresh_token: str) -> TokenPair`：不存在抛 `InvalidTokenError`；成功时删除旧 token（轮换）并返回新对
   - `async def logout(self, refresh_token: str) -> None`：删除 `refresh:{token}`，不存在也静默成功（幂等）
 
@@ -1165,6 +1188,7 @@ git commit -m "feat: refresh token 轮换与登出吊销"
 ### Task 9: 依赖注入 + 路由（send-code / verify）+ 集成测试基建
 
 **Files:**
+
 - Create: `app/api/__init__.py`（空）、`app/api/deps.py`
 - Create: `app/routers/__init__.py`（空）、`app/routers/auth.py`
 - Modify: `app/main.py`（挂载路由）、`app/db/redis.py`（新建，并入本任务）
@@ -1172,8 +1196,10 @@ git commit -m "feat: refresh token 轮换与登出吊销"
 - Test: `tests/integration/__init__.py`（空）、`tests/integration/conftest.py`、`tests/integration/test_auth_flow.py`
 
 **Interfaces:**
+
 - Consumes: 前面全部任务
 - Produces:
+
   - `app/db/redis.py`：`get_redis_client(redis_url: str) -> redis.asyncio.Redis`
   - `app/api/deps.py`：`get_settings() -> Settings`（lru_cache）、`async def get_session() -> AsyncIterator[AsyncSession]`、`async def get_redis() -> redis.asyncio.Redis`、`async def get_auth_service(...) -> AuthService`、`async def get_current_user(...) -> User`（Task 10 用 HTTPBearer）
   - `app/routers/auth.py`：`router = APIRouter(prefix="/auth", tags=["auth"])`，端点 `POST /send-code`（202）、`POST /verify`（200，`VerifyResponse`）
@@ -1439,13 +1465,16 @@ git commit -m "feat: 认证路由、依赖注入与集成测试基建"
 ### Task 10: refresh / logout / me 端点 + 认证依赖
 
 **Files:**
+
 - Modify: `app/routers/auth.py`（新增三个端点）
 - Modify: `app/api/deps.py`（新增 `get_current_user`）
 - Test: `tests/integration/test_token_endpoints.py`
 
 **Interfaces:**
+
 - Consumes: `AuthService.refresh/logout`（Task 8）、`decode_access_token`（Task 5）、`UserRepo.get_by_id`（Task 3）、`InvalidTokenError`（Task 2）
 - Produces:
+
   - `POST /auth/refresh` → 200 `TokenPair`；无效 token 401 `INVALID_TOKEN`
   - `POST /auth/logout` → 204 无 body；幂等
   - `GET /auth/me` → 200 `UserOut`；Bearer access token 认证（`fastapi.security.HTTPBearer`，`auto_error=False`，缺失/无效均 401）
@@ -1592,6 +1621,7 @@ git commit -m "feat: refresh/logout/me 端点与 Bearer 认证依赖"
 ### Task 11: docker-compose、.env.example、README 与端到端手动验证
 
 **Files:**
+
 - Create: `docker-compose.yml`
 - Create: `.env.example`
 - Create: `README.md`
@@ -1599,6 +1629,7 @@ git commit -m "feat: refresh/logout/me 端点与 Bearer 认证依赖"
 - Create: `app/db/init.py`（生产/开发启动时建表，供 uvicorn 启动脚本调用——开发用）
 
 **Interfaces:**
+
 - Consumes: 全部前序任务
 - Produces: 可运行的本地开发环境：`docker compose up -d` 起 PG+Redis，`.env` 配置后 `uvicorn app.main:app --reload` 启动，Swagger UI 在 `/docs`
 
