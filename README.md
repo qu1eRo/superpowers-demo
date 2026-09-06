@@ -46,23 +46,37 @@ cp .env.example .env
 
 编辑 `.env`，把 `JWT_SECRET` 改为一个随机字符串。
 
-### 4. 启动服务
+### 4. 建表（首次启动前执行一次）
+
+```bash
+python -c "import asyncio, os; from sqlalchemy.ext.asyncio import create_async_engine; from app.db.init import create_tables; asyncio.run(create_tables(create_async_engine(os.environ['DATABASE_URL'])))"
+```
+
+该命令读取环境变量 `DATABASE_URL` 建表。由于 Windows 的 `set` / PowerShell 的 `$env:` 只对当前会话生效，最简单的做法是把 `DATABASE_URL` 写进 `.env` 再配合 Python 读取（`.env` 不会被 pydantic 自动加载到 `os.environ`），可用下面的一行版本：
+
+```bash
+python -c "import asyncio; from pydantic_settings import BaseSettings; from sqlalchemy.ext.asyncio import create_async_engine; from app.db.init import create_tables; from app.core.config import Settings; s = Settings(); asyncio.run(create_tables(create_async_engine(s.database_url)))"
+```
+
+（第二种写法直接复用应用的 `Settings`，从 `.env` 读取 `DATABASE_URL`，无需手动导出环境变量。）
+
+### 5. 启动服务
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-启动时建表（开发用）可调用 `app.db.init.create_tables`。Swagger UI：<http://localhost:8000/docs>
+Swagger UI：<http://localhost:8000/docs>
 
 ## curl 示例
 
-发码后从控制台 `[MOCK SMS]` 输出中取验证码。
+发码后从控制台 `[MOCK SMS]` 输出中取验证码（curl 示例中的 `123456` 为示意值，实际验证码以控制台输出为准）。
 
 ```bash
-# 1. 发送验证码（控制台打印 [MOCK SMS] 13800000001 -> 123456）
+# 1. 发送验证码（控制台打印 [MOCK SMS] 13800000001 -> <code>，<code> 为实际验证码，下同）
 curl -X POST http://localhost:8000/auth/send-code -H "Content-Type: application/json" -d '{"phone":"13800000001"}'
 
-# 2. 验证登录
+# 2. 验证登录（<code> 替换为控制台打印的实际验证码）
 curl -X POST http://localhost:8000/auth/verify -H "Content-Type: application/json" -d '{"phone":"13800000001","code":"123456"}'
 
 # 3. 刷新 token
