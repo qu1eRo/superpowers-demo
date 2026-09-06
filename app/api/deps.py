@@ -1,11 +1,16 @@
 from collections.abc import AsyncIterator
 from functools import lru_cache
 
+import jwt
 import redis.asyncio
 from fastapi import Depends
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.core.errors import InvalidTokenError
+from app.core.security import decode_access_token
+from app.db.models import User
 from app.db.redis import get_redis_client
 from app.db.session import get_engine, get_session_factory
 from app.providers import make_sms_provider
@@ -50,3 +55,23 @@ def get_auth_service(
     provider = make_sms_provider(settings.sms_provider)
     return AuthService(user_repo=UserRepo(session), sms_provider=provider,
                        redis=redis, settings=settings)
+
+
+_bearer = HTTPBearer(auto_error=False)
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> User:
+    if credentials is None:
+        raise InvalidTokenError()
+    try:
+        user_id = decode_access_token(credentials.credentials, settings.jwt_secret)
+    except jwt.InvalidTokenError:
+        raise InvalidTokenError()
+    user = await UserRepo(session).get_by_id(user_id)
+    if user is None:
+        raise InvalidTokenError()
+    return user
