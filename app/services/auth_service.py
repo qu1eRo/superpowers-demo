@@ -3,9 +3,11 @@ import secrets
 import redis.asyncio
 
 from app.core.config import Settings
-from app.core.errors import RateLimitedError
+from app.core.errors import InvalidCodeError, RateLimitedError, TooManyAttemptsError
+from app.core.security import create_access_token, generate_refresh_token
 from app.providers.base import SmsProvider
 from app.repositories.user_repo import UserRepo
+from app.schemas.auth import VerifyResponse
 
 
 def _get_str(value) -> str | None:
@@ -32,3 +34,36 @@ class AuthService:
             await pipe.execute()
         await self.sms_provider.send_code(phone, code)
         return self.settings.sms_code_ttl_seconds
+
+    async def verify(self, phone: str, code: str) -> VerifyResponse:
+        fail_key = f"sms:fail:{phone}"
+        fails = int(_get_str(await self.redis.get(fail_key)) or 0)
+        if fails >= self.settings.sms_max_fail_count:
+            raise TooManyAttemptsError()
+
+        stored = _get_str(await self.redis.get(f"sms:code:{phone}"))
+        if stored is None or stored != code:
+            pipe = self.redis.pipeline()
+            pipe.incr(fail_key)
+            pipe.expire(fail_key, self.settings.sms_code_ttl_seconds)
+            await pipe.execute()
+            raise InvalidCodeError()
+
+        await self.redis.delete(f"sms:code:{phone}", fail_key)
+
+        user = await self.user_repo.get_by_phone(phone)
+        is_new = user is None
+        if is_new:
+            user = await self.user_repo.create(phone)
+
+        access, refresh = await self._issue_tokens(user.id)
+        return VerifyResponse(access_token=access, refresh_token=refresh,
+                              user_id=user.id, is_new=is_new)
+
+    async def _issue_tokens(self, user_id: int) -> tuple[str, str]:
+        access = create_access_token(user_id, self.settings.jwt_secret,
+                                     self.settings.access_token_ttl_minutes)
+        refresh = generate_refresh_token()
+        await self.redis.setex(f"refresh:{refresh}",
+                               self.settings.refresh_token_ttl_days * 86400, str(user_id))
+        return access, refresh
