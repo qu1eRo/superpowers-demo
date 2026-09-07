@@ -25,12 +25,16 @@ class AuthService:
         self.settings = settings
 
     async def send_code(self, phone: str) -> int:
-        if await self.redis.exists(f"sms:limit:{phone}"):
-            raise RateLimitedError()
         code = f"{secrets.randbelow(10**6):06d}"
+        # 限流：SET NX EX 原子获取信号量，写入成功者放行，已被限流则拒绝。
+        acquired = await self.redis.set(
+            f"sms:limit:{phone}", "1",
+            nx=True, ex=self.settings.sms_send_limit_seconds,
+        )
+        if acquired is None:
+            raise RateLimitedError()
         async with self.redis.pipeline(transaction=True) as pipe:
-            pipe.setex(f"sms:code:{phone}", self.settings.sms_code_ttl_seconds, code)
-            pipe.setex(f"sms:limit:{phone}", self.settings.sms_send_limit_seconds, "1")
+            pipe.set(f"sms:code:{phone}", code, ex=self.settings.sms_code_ttl_seconds)
             await pipe.execute()
         await self.sms_provider.send_code(phone, code)
         return self.settings.sms_code_ttl_seconds
@@ -43,10 +47,11 @@ class AuthService:
 
         stored = _get_str(await self.redis.get(f"sms:code:{phone}"))
         if stored is None or stored != code:
-            pipe = self.redis.pipeline()
-            pipe.incr(fail_key)
-            pipe.expire(fail_key, self.settings.sms_code_ttl_seconds)
-            await pipe.execute()
+            # 失败计数：仅计数器首次创建（incr 返回 1）时设置过期，
+            # 锁定窗口从首次失败起算，不随后续失败重置（否则可被无限推迟）。
+            fails = await self.redis.incr(fail_key)
+            if fails == 1:
+                await self.redis.expire(fail_key, self.settings.sms_code_ttl_seconds)
             raise InvalidCodeError()
 
         await self.redis.delete(f"sms:code:{phone}", fail_key)
@@ -62,10 +67,10 @@ class AuthService:
 
     async def refresh(self, refresh_token: str) -> TokenPair:
         key = f"refresh:{refresh_token}"
-        user_id = _get_str(await self.redis.get(key))
+        # GETDEL 原子获取并吊销，消除 get -> delete 间隙的轮换复用窗口。
+        user_id = _get_str(await self.redis.getdel(key))
         if user_id is None:
             raise InvalidTokenError()
-        await self.redis.delete(key)
         access, new_refresh = await self._issue_tokens(int(user_id))
         return TokenPair(access_token=access, refresh_token=new_refresh)
 
@@ -76,6 +81,6 @@ class AuthService:
         access = create_access_token(user_id, self.settings.jwt_secret,
                                      self.settings.access_token_ttl_minutes)
         refresh = generate_refresh_token()
-        await self.redis.setex(f"refresh:{refresh}",
-                               self.settings.refresh_token_ttl_days * 86400, str(user_id))
+        await self.redis.set(f"refresh:{refresh}", str(user_id),
+                             ex=self.settings.refresh_token_ttl_days * 86400)
         return access, refresh

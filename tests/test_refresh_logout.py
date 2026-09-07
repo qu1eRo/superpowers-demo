@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from fakeredis.aioredis import FakeRedis
 
@@ -49,6 +51,35 @@ async def test_refresh_unknown_token_raises(redis, settings):
     svc = make_service(redis, settings)
     with pytest.raises(InvalidTokenError):
         await svc.refresh("no-such-token")
+
+
+async def test_refresh_concurrent_second_call_rejected(redis, settings):
+    """轮换必须原子：同一 refresh token 的并发第二次使用必须失败（GETDEL）。
+
+    fakeredis 命令不会真正挂起协程，因此通过在旧实现的
+    get -> delete 间隙（delete 前）注入 sleep(0) 强制事件循环切换，
+    模拟真实 Redis 网络延迟下的并发交错。
+    """
+    svc = make_service(redis, settings)
+    _, refresh = await svc._issue_tokens(42)
+
+    original_delete = redis.delete
+
+    async def slow_delete(*keys):
+        await asyncio.sleep(0)  # 在检查通过后、吊销前让出控制权
+        return await original_delete(*keys)
+
+    redis.delete = slow_delete
+
+    results = await asyncio.gather(
+        svc.refresh(refresh), svc.refresh(refresh), return_exceptions=True
+    )
+    ok = [r for r in results if not isinstance(r, Exception)]
+    errors = [r for r in results if isinstance(r, Exception)]
+    assert len(ok) == 1, f"预期恰好一次成功，实际 {results}"
+    assert len(errors) == 1 and isinstance(errors[0], InvalidTokenError)
+    # 旧 token 已被吊销
+    assert await redis.get(f"refresh:{refresh}") is None
 
 
 async def test_logout_revokes(redis, settings, issued_token):

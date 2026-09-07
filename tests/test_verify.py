@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from fakeredis.aioredis import FakeRedis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,7 +48,7 @@ def make_service(session, provider, redis, settings) -> AuthService:
 
 
 async def store_code(redis, phone: str, code: str) -> None:
-    await redis.setex(f"sms:code:{phone}", 300, code)
+    await redis.set(f"sms:code:{phone}", code, ex=300)
 
 
 async def test_verify_new_user_registers_and_returns_tokens(session, provider, redis, settings):
@@ -108,3 +110,43 @@ async def test_verify_missing_code_raises(session, provider, redis, settings):
     svc = make_service(session, provider, redis, settings)
     with pytest.raises(InvalidCodeError):
         await svc.verify("13800000006", "123456")
+
+
+async def test_fail_counter_ttl_set_only_on_first_failure(session, provider, redis, settings):
+    """锁定窗口从首次失败起算（TTL 只在计数器首次创建时设置，不随后续失败重置）。
+
+    预置一个接近上限的失败计数（TTL 已明显小于完整窗口），
+    再次失败后计数 +1 但 TTL 不得被重置回完整窗口——
+    否则攻击者持续失败会让锁定永不自清。
+    """
+    svc = make_service(session, provider, redis, settings)
+    phone = "13800000008"
+    await redis.set(f"sms:fail:{phone}", "4", ex=10)  # TTL 10s < sms_code_ttl_seconds(300)
+    await store_code(redis, phone, "123456")
+    with pytest.raises(InvalidCodeError):
+        await svc.verify(phone, "000000")
+    assert (await redis.get(f"sms:fail:{phone}")).decode() == "5"
+    ttl = await redis.ttl(f"sms:fail:{phone}")
+    assert 0 < ttl <= 10, f"失败计数 TTL 被重置（{ttl}），锁定窗口可被无限推迟"
+
+
+async def test_fail_counter_ttl_created_on_first_failure(session, provider, redis, settings):
+    """首次失败时计数器必须带上过期时间（无 TTL 的残留键不允许出现）。"""
+    svc = make_service(session, provider, redis, settings)
+    phone = "13800000009"
+    await store_code(redis, phone, "123456")
+    with pytest.raises(InvalidCodeError):
+        await svc.verify(phone, "000000")
+    ttl = await redis.ttl(f"sms:fail:{phone}")
+    assert ttl == settings.sms_code_ttl_seconds or 0 < ttl <= settings.sms_code_ttl_seconds
+
+
+async def test_fail_counter_expires_allowing_retry_after_window(session, provider, redis, settings):
+    """窗口过期后计数器自清，用户可再次尝试（首错起 5 分钟语义）。"""
+    svc = make_service(session, provider, redis, settings)
+    phone = "13800000010"
+    await redis.set(f"sms:fail:{phone}", str(settings.sms_max_fail_count), ex=1)
+    await asyncio.sleep(1.1)  # 模拟锁定窗口流逝
+    await store_code(redis, phone, "123456")
+    result = await svc.verify(phone, "123456")  # 不再抛 TooManyAttemptsError
+    assert result.is_new is True
