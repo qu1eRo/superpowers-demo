@@ -1,6 +1,7 @@
 import secrets
 
 import redis.asyncio
+from sqlalchemy.exc import IntegrityError
 
 from app.core.config import Settings
 from app.core.errors import InvalidCodeError, InvalidTokenError, RateLimitedError, TooManyAttemptsError
@@ -45,21 +46,35 @@ class AuthService:
         if fails >= self.settings.sms_max_fail_count:
             raise TooManyAttemptsError()
 
-        stored = _get_str(await self.redis.get(f"sms:code:{phone}"))
+        # GETDEL 原子消费验证码（一次性语义）：读到即作废，消除 get -> delete
+        # 间隙的并发复用窗口。错误尝试同样消耗验证码——错的尝试作废、
+        # 重新发码是一次性验证码下的常见设计。
+        stored = _get_str(await self.redis.getdel(f"sms:code:{phone}"))
         if stored is None or stored != code:
-            # 失败计数：仅计数器首次创建（incr 返回 1）时设置过期，
-            # 锁定窗口从首次失败起算，不随后续失败重置（否则可被无限推迟）。
+            # 失败计数：incr 返回 1（首次）时设置过期；若首次的 expire
+            # 丢失导致键存在但无 TTL（ttl() == -1），任何后续失败都会补上，
+            # 自愈防止计数器永不过期造成用户永久锁定。窗口仍从首次失败
+            # 起算，不随后续失败重置（否则可被无限推迟）。
             fails = await self.redis.incr(fail_key)
-            if fails == 1:
+            if fails == 1 or await self.redis.ttl(fail_key) == -1:
                 await self.redis.expire(fail_key, self.settings.sms_code_ttl_seconds)
             raise InvalidCodeError()
 
-        await self.redis.delete(f"sms:code:{phone}", fail_key)
+        await self.redis.delete(fail_key)
 
         user = await self.user_repo.get_by_phone(phone)
         is_new = user is None
         if is_new:
-            user = await self.user_repo.create(phone)
+            try:
+                user = await self.user_repo.create(phone)
+            except IntegrityError:
+                # 并发注册竞态：另一请求已抢先插入同手机号（unique 约束）。
+                # 回滚后返回已存在用户，is_new 以"本次请求是否真的创建了"判定。
+                await self.user_repo.session.rollback()
+                user = await self.user_repo.get_by_phone(phone)
+                if user is None:
+                    raise
+                is_new = False
 
         access, refresh = await self._issue_tokens(user.id)
         return VerifyResponse(access_token=access, refresh_token=refresh,
